@@ -1,147 +1,158 @@
-name: release
+name: Release
 
+# Pushing a v* tag builds reproducible static binaries, publishes the
+# multi-arch OCI plugin image and the GitHub release (archives plus binary and
+# archive checksums), attests both, then lets communique rewrite the notes.
+# Pull requests that change the release machinery build without publishing.
 on:
   push:
-    branches: [main]
-  workflow_dispatch:
-    inputs:
-      force:
-        description: "Re-release VERSION even if its tag already exists"
-        type: boolean
-        default: false
+    tags: ["v*"]
+  pull_request:
+    paths:
+      - ".github/workflows/release.yml"
+      - "Containerfile"
+      - "mise.toml"
 
 permissions:
   contents: read
 
+# bash, rather than the default "bash -e", also sets pipefail.
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  IMAGE: ghcr.io/${{ github.repository }}
+
 jobs:
-  gate:
-    name: Release gate
+  build:
+    name: Build
     runs-on: ubuntu-latest
-    outputs:
-      version: ${{ steps.check.outputs.version }}
-      tag: ${{ steps.check.outputs.tag }}
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Check VERSION, tag, and CHANGELOG
-        id: check
-        run: |
-          VERSION=$(cat VERSION)
-          TAG="v${VERSION}"
-          echo "version=${VERSION}" >> "$GITHUB_OUTPUT"
-          echo "tag=${TAG}" >> "$GITHUB_OUTPUT"
-
-          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "::error::VERSION '$VERSION' is not valid semver (expected X.Y.Z)"
-            exit 1
-          fi
-
-          if [ "${{ inputs.force }}" != "true" ]; then
-            if gh api "repos/${{ github.repository }}/git/refs/tags/${TAG}" >/dev/null 2>&1; then
-              echo "::error::tag ${TAG} already exists; bump VERSION or re-run with force=true"
-              exit 1
-            fi
-          fi
-
-          if ! grep -qF "## [${VERSION}]" CHANGELOG.md; then
-            echo "::error::CHANGELOG.md is missing a '## [${VERSION}]' section"
-            exit 1
-          fi
-
-  verify:
-    name: Verify
-    needs: gate
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Parse Go version from mise.toml
-        id: go-version
-        run: echo "version=$(grep '^go' mise.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: ${{ steps.go-version.outputs.version }}
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          # A release never restores a cache, so nothing cached reaches the artifacts.
+          cache: false
+      - name: Build release binaries
+        env:
+          TAG: ${{ github.event_name == 'push' && github.ref_name || 'v0.0.0' }}
+        run: |
+          if ! [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Tag $TAG is not vX.Y.Z" >&2
+            exit 1
+          fi
+          mise run release:build "$TAG"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: dist
+          path: dist/
+          if-no-files-found: error
 
-      - name: go test
-        run: go test -race ./...
-
-  publish:
-    name: Publish
-    needs: [gate, verify]
+  image:
+    name: Image
+    needs: build
     runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+      packages: write
+      id-token: write
+      attestations: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: dist
+          path: dist
+      - uses: docker/setup-buildx-action@f87e5991a6d7451dcb8d9637bfbc97413f497069 # v4.4.1
+      - if: github.event_name == 'push'
+        uses: docker/login-action@81c6f93d4bc991e510b342a00b419b3bb4efc5c6 # v4.7.0
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+      # The Containerfile only copies prebuilt binaries, so no emulation is needed.
+      - id: push
+        uses: docker/build-push-action@c3c9e263c25d99ce0380d002d59b67737d91b0dc # v7.4.0
+        with:
+          context: .
+          file: Containerfile
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ env.IMAGE }}:${{ github.ref_name }}
+          provenance: false
+          sbom: false
+      - if: github.event_name == 'push'
+        uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-name: ${{ env.IMAGE }}
+          subject-digest: ${{ steps.push.outputs.digest }}
+          push-to-registry: true
+      - if: github.event_name == 'push'
+        name: Record the image digest
+        env:
+          DIGEST: ${{ steps.push.outputs.digest }}
+        run: echo "$IMAGE:$GITHUB_REF_NAME@$DIGEST" > dist/IMAGE
+      - if: github.event_name == 'push'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: image
+          path: dist/IMAGE
+          if-no-files-found: error
+
+  release:
+    name: Publish
+    needs: image
+    if: github.event_name == 'push'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     permissions:
       contents: write
-    env:
-      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-      VERSION: ${{ needs.gate.outputs.version }}
-      TAG: ${{ needs.gate.outputs.tag }}
+      id-token: write
+      attestations: write
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Parse Go version from mise.toml
-        id: go-version
-        run: echo "version=$(grep '^go' mise.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: ${{ steps.go-version.outputs.version }}
-
-      - name: Build and package
-        run: |
-          BIN=openbao-plugin-secrets-onepassword
-          mkdir -p assets
-          for GOARCH in amd64 arm64; do
-            OUTDIR=$(mktemp -d)
-            CGO_ENABLED=0 GOOS=linux GOARCH=$GOARCH \
-              go build -trimpath -ldflags "-s -w" -o "$OUTDIR/$BIN" ./cmd/$BIN
-            ASSET="${BIN}_${VERSION}_linux_${GOARCH}.tar.gz"
-            tar -C "$OUTDIR" -czf "assets/${ASSET}" "$BIN"
-          done
-          cd assets
-          for ASSET in *.tar.gz; do
-            shasum -a 256 "$ASSET" > "${ASSET}.sha256"
-          done
-          ls -la
-
-      - name: Create or move tag
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-          if [ "${{ inputs.force }}" = "true" ]; then
-            git tag -f "$TAG"
-            git push --force origin "$TAG"
-          else
-            git tag "$TAG"
-            git push origin "$TAG"
-          fi
-
-      - name: Create or update GitHub release
-        run: |
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            gh release upload "$TAG" assets/* --clobber
-            gh release edit "$TAG" --generate-notes
-          else
-            gh release create "$TAG" assets/* --title "$TAG" --generate-notes --target "${{ github.sha }}"
-          fi
-
-  proxy-warm:
-    name: Warm Go module proxy
-    needs: [gate, publish]
-    runs-on: ubuntu-latest
-    if: ${{ !github.event.repository.private }}
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Parse Go version from mise.toml
-        id: go-version
-        run: echo "version=$(grep '^go' mise.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-go@v5
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
         with:
-          go-version: ${{ steps.go-version.outputs.version }}
-
-      - name: Warm proxy.golang.org
-        run: GOPROXY=https://proxy.golang.org go list -m github.com/NavistAu/openbao-plugin-secrets-onepassword@${{ needs.gate.outputs.tag }}
+          path: dist
+          merge-multiple: true
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/*.tar.gz
+            dist/linux_*/openbao-plugin-secrets-onepassword
+      - name: Publish the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --verify-tag --title "$GITHUB_REF_NAME" --generate-notes \
+            dist/*.tar.gz dist/SHA256SUMS dist/SHA256SUMS.binaries dist/IMAGE
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          install: false
+          # A release never restores a cache, so nothing cached reaches the artifacts.
+          cache: false
+      # Until FNOX_AGE_KEY is a repository secret, the release keeps GitHub's
+      # generated notes.
+      - name: Write the release notes
+        continue-on-error: true
+        env:
+          # Only the release tools, not the build toolchain.
+          MISE_ENABLE_TOOLS: fnox,communique
+          GITHUB_TOKEN: ${{ github.token }}
+          FNOX_AGE_KEY: ${{ secrets.FNOX_AGE_KEY }}
+          FNOX_IF_MISSING: error
+        run: mise run release:notes "$GITHUB_REF_NAME"

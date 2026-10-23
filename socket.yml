@@ -1,0 +1,2 @@
+# Socket scans the plugin's Go module dependencies (go.mod / go.sum).
+version: 2

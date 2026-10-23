@@ -1,0 +1,10 @@
+amends "PatchulaConfig.pkl"
+
+prs { dashboard = true }
+
+defaults {
+  // Updates are proposed once a day.
+  windows {
+    new Window { cron { "0 6 * * *" } }
+  }
+}

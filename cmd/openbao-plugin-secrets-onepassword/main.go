@@ -10,7 +10,7 @@ import (
 	"github.com/openbao/openbao/api/v2"
 	"github.com/openbao/openbao/sdk/v2/plugin"
 
-	"github.com/NavistAu/openbao-plugin-secrets-onepassword/backend"
+	"github.com/sweepies/openbao-plugin-secrets-onepassword/backend"
 )
 
 func main() {

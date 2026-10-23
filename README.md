@@ -1,6 +1,6 @@
 # openbao-plugin-secrets-onepassword
 
-[![CI](https://github.com/NavistAu/openbao-plugin-secrets-onepassword/actions/workflows/ci.yml/badge.svg)](https://github.com/NavistAu/openbao-plugin-secrets-onepassword/actions/workflows/ci.yml)
+[![CI](https://github.com/sweepies/openbao-plugin-secrets-onepassword/actions/workflows/ci.yml/badge.svg)](https://github.com/sweepies/openbao-plugin-secrets-onepassword/actions/workflows/ci.yml)
 [![License: MPL-2.0](https://img.shields.io/badge/License-MPL--2.0-blue.svg)](https://opensource.org/licenses/MPL-2.0)
 
 `op` is an [OpenBao](https://openbao.org/) secrets engine that serves
@@ -8,6 +8,11 @@
 service-account Go SDK. It holds no durable copy of item data: values
 are cached in an in-memory replica, refreshed on a delta cycle, and
 refetched from 1Password whenever a plugin process restarts.
+
+This is a fork of
+[NavistAu/openbao-plugin-secrets-onepassword](https://github.com/NavistAu/openbao-plugin-secrets-onepassword)
+at v0.1.0. It adds the `kv/` read, ships as an OCI plugin image, and
+builds reproducible release binaries.
 
 ## Why this exists
 
@@ -48,7 +53,7 @@ flowchart LR
     sdk -.->|refreshes| replica
 ```
 
-Every read (`item/…`, `field/…`, `vaults/…`) is served from the
+Every read (`item/…`, `field/…`, `kv/…`, `vaults/…`) is served from the
 replica. If the replica's data for that vault is outside its freshness
 window, the engine first runs a delta cycle: it lists changed items
 since the last cycle and fetches only those, then serves the read from
@@ -72,46 +77,72 @@ staleness for a bounded, predictable 1Password API request rate.
 ## Requirements
 
 - An OpenBao server. Built and tested against `openbao/sdk/v2` v2.6.2
-  and `openbao/api/v2` v2.6.0.
+  and `openbao/api/v2` v2.6.0. OCI installation needs OpenBao 2.6 or
+  newer.
 - A 1Password service-account token with read access to the vaults
   you allowlist.
-- Go 1.25 to build from source.
 
 ## Installation
 
-### From a release tarball
+Each [release](https://github.com/sweepies/openbao-plugin-secrets-onepassword/releases)
+publishes:
 
-1. Download the tarball and its checksum file for your platform from
-   the [Releases](https://github.com/NavistAu/openbao-plugin-secrets-onepassword/releases)
-   page. Releases publish `linux_amd64` and `linux_arm64` builds only.
-2. Verify the checksum before use:
-   ```sh
-   sha256sum -c openbao-plugin-secrets-onepassword_<version>_linux_amd64.tar.gz.sha256
-   ```
-3. Extract the tarball and copy the `openbao-plugin-secrets-onepassword`
-   binary into your OpenBao plugin directory.
+- the multi-arch OCI image `ghcr.io/sweepies/openbao-plugin-secrets-onepassword:<tag>`
+  (linux/amd64, linux/arm64), with the binary at the image root and named
+  by `ENTRYPOINT`;
+- `linux_amd64` and `linux_arm64` archives, with `SHA256SUMS` for the
+  archives and `SHA256SUMS.binaries` for the binaries inside them;
+- `IMAGE`, the image reference pinned by manifest digest.
 
-A release tarball needs no Go toolchain on the target host, but it
-only covers linux/amd64 and linux/arm64. Other platforms must build
-from source.
+GitHub build-provenance attestations cover the image, the archives and
+the binaries (`gh attestation verify`). Builds are reproducible:
+`mise run release:build <tag>` on any machine produces the same binary
+hashes.
 
-### From source
+### As an OCI plugin
 
-```sh
-go build -o openbao-plugin-secrets-onepassword ./cmd/openbao-plugin-secrets-onepassword
+On OpenBao 2.6, pin the binary hash from `SHA256SUMS.binaries`:
+
+```hcl
+plugin_directory     = "/openbao/plugins"   # must be writable
+plugin_auto_download = true
+plugin_auto_register = true
+
+plugin "secret" "onepassword" {
+  image       = "ghcr.io/sweepies/openbao-plugin-secrets-onepassword"
+  version     = "v0.2.0"
+  binary_name = "openbao-plugin-secrets-onepassword"
+  sha256sum   = "<linux binary SHA-256>"
+}
 ```
 
-Building from source works on any platform Go supports, but requires
-a Go 1.25 toolchain on the build host and does not benefit from a
-release's pre-computed checksum — compute your own with `sha256sum`.
+OpenBao 2.7 can instead pin the image by manifest digest (the `IMAGE`
+asset) and reads the binary name from `ENTRYPOINT`:
 
-### Register and mount
+```hcl
+plugin "secret" "onepassword" {
+  image = "ghcr.io/sweepies/openbao-plugin-secrets-onepassword:v0.2.0@sha256:<manifest digest>"
+}
+```
+
+The plugin reports its release tag as its version, so `version` must
+match the tag.
+
+### From a release archive
+
+Verify the archive against `SHA256SUMS`, extract
+`openbao-plugin-secrets-onepassword` into the plugin directory, and
+register it with the binary's hash:
 
 ```sh
-SHA256=$(sha256sum openbao-plugin-secrets-onepassword | awk '{print $1}')
-bao plugin register -sha256="$SHA256" \
-  -command=openbao-plugin-secrets-onepassword secret op
-bao secrets enable -path=op op
+bao plugin register -sha256="<linux binary SHA-256>" -version=v0.2.0 \
+  -command=openbao-plugin-secrets-onepassword secret onepassword
+```
+
+### Mount and configure
+
+```sh
+bao secrets enable -path=op onepassword
 ```
 
 Write the configuration with the service-account token piped through
@@ -122,6 +153,29 @@ process listing:
 printf '%s' "$OP_SERVICE_ACCOUNT_TOKEN" | bao write op/config \
   service_account_token=- vaults=Infra refresh_interval=15m
 ```
+
+Leave `ratelimit_probe_cmd` unset unless you need it: it makes the
+engine execute the configured binary inside the OpenBao server's
+environment.
+
+## Paths
+
+| Path | Operation | Returns |
+| --- | --- | --- |
+| `vaults` | list | allowlisted vaults |
+| `vaults/<vault>/items` | list | the vault's items |
+| `item/<vault>/<item>` | read | the whole item: `fields` (a list of `{id, title, type, value, section_id}`), `sections`, `notes`, `tags`, metadata |
+| `field/<vault>/<item>/[<section>/]<field>` | read | one field's `value`, `title`, `type` |
+| `kv/<vault>/<item>` | read | the item's fields as `{label: value}` |
+| `status`, `refresh[/<vault>]`, `invalidate[/<vault>]`, `config` | | see below |
+
+`<vault>` and `<item>` are titles or IDs. `kv/` is the shape KV clients
+read: `bao kv get -field=password op/kv/Infra/postgres`, or a fnox
+`vault` provider with `path = "op/kv/Infra"` and `value = "postgres/password"`.
+A label that occurs more than once in an item is keyed
+`<section>.<label>`. Repeats outside any section, or within one
+section, make the `kv/` read fail; use `field/` for those items.
+`kv/` returns only field values, without staleness metadata.
 
 ## Configuration reference
 
@@ -237,30 +291,15 @@ log lines:
   1Password request budget; the actual refetch cost lands on whatever
   read or scheduled cycle touches that vault next.
 
-## Tests
+## Development
 
-`go test ./...` in `backend/` is the authoritative suite: it runs
-against fakes for both the 1Password SDK and the OpenBao storage
-backend, so it is deterministic and needs no live 1Password account or
-running OpenBao server. `bench/` holds separate, manual scripts for
-exercising the engine against a real `bao` server and a real
-1Password service account; it is not run in CI and is not a substitute
-for the `backend/` suite.
+Tools come from [mise](https://mise.jdx.dev). `mise run ci` runs
+everything GitHub runs: `go mod tidy -diff`, formatting, `go vet`,
+golangci-lint, the workflow lint, the race-enabled test suite, and a
+build. The tests run against fakes for both the 1Password SDK and
+OpenBao storage, so they need no 1Password account or OpenBao server.
 
-A private-forge Woodpecker CI also runs `go build ./...` and
-`go test ./...` on every push, alongside the GitHub Actions workflow
-above.
-
-## Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for the build and test commands,
-the branch model, and the bar for adding new configuration options. This
-project follows the [Contributor Covenant](CODE_OF_CONDUCT.md).
-
-## Security
-
-Report vulnerabilities through GitHub private security advisories on
-this repository. See [SECURITY.md](SECURITY.md) for the full policy.
+Releases are cut by pushing a `vX.Y.Z` tag.
 
 ## License
 

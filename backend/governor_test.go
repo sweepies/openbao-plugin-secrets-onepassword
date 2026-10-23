@@ -450,7 +450,7 @@ func TestGovernor_RunProbeIfDue_SelfThrottles(t *testing.T) {
 
 	clock.advance(15 * time.Minute)
 	g.runProbeIfDue(context.Background())
-	if g.snapshot().LastProbeAt == firstProbeAt {
+	if g.snapshot().LastProbeAt.Equal(firstProbeAt) {
 		t.Errorf("runProbeIfDue did not fire again after refresh_interval elapsed")
 	}
 }

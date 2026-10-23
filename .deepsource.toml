@@ -1,0 +1,21 @@
+version = 1
+
+test_patterns = [
+  "backend/*_test.go",
+  "backend/opclient_fake.go",
+]
+
+[[analyzers]]
+name = "go"
+
+  [analyzers.meta]
+  import_root = "github.com/sweepies/openbao-plugin-secrets-onepassword"
+
+[[analyzers]]
+name = "docker"
+
+  [analyzers.meta]
+  dockerfile_paths = ["Containerfile"]
+
+[[analyzers]]
+name = "secrets"

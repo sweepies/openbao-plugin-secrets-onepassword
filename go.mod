@@ -1,4 +1,4 @@
-module github.com/NavistAu/openbao-plugin-secrets-onepassword
+module github.com/sweepies/openbao-plugin-secrets-onepassword
 
 go 1.25.0
 

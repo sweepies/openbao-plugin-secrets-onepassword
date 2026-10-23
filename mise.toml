@@ -1,2 +1,70 @@
 [tools]
-go = "1.25"
+go = "1.27.3"
+golangci-lint = "2.15.0"
+# The race detector needs cgo; zig supplies the C compiler.
+zig = "0.17.0"
+
+[env]
+CGO_ENABLED = "0"
+
+[tasks.build]
+description = "Build the plugin for this platform into bin/"
+run = "go build -trimpath -buildvcs=false -o bin/openbao-plugin-secrets-onepassword ./cmd/openbao-plugin-secrets-onepassword"
+
+[tasks.test]
+description = "Run the offline test suite"
+run = "go test -race ./..."
+env = { CGO_ENABLED = "1", CC = "zig cc" }
+
+[tasks.lint]
+description = "Check formatting, vet and lint the Go code and the workflows"
+depends = ["lint:actions"]
+run = [
+  'test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }',
+  "go vet ./...",
+  "golangci-lint run",
+]
+
+[tasks."lint:actions"]
+description = "Lint the GitHub Actions workflows"
+tools = { jactionlint = "2.3.0", shellcheck = "0.11.0" }
+run = "jactionlint"
+
+[tasks.ci]
+description = "Run the same checks locally and on GitHub"
+run = [
+  "go mod tidy -diff",
+  { task = "lint" },
+  { task = "test" },
+  { task = "build" },
+]
+
+[tasks."release:build"]
+description = "Build reproducible static release binaries and archives into dist/"
+usage = 'arg "<tag>" help="Release tag, such as v0.2.0"'
+run = '''
+set -euo pipefail
+tag="${usage_tag?}"
+name=openbao-plugin-secrets-onepassword
+rm -rf dist
+for arch in amd64 arm64; do
+  mkdir -p "dist/linux_$arch"
+  GOOS=linux GOARCH="$arch" go build -trimpath -buildvcs=false \
+    -ldflags "-s -w -buildid= -X github.com/sweepies/$name/backend.version=$tag" \
+    -o "dist/linux_$arch/$name" ./cmd/$name
+  tar --sort=name --mtime=@0 --owner=0 --group=0 --numeric-owner \
+    -C "dist/linux_$arch" -czf "dist/${name}_${tag#v}_linux_$arch.tar.gz" "$name"
+done
+(
+  cd dist
+  sha256sum linux_*/"$name" > SHA256SUMS.binaries
+  sha256sum ./*.tar.gz > SHA256SUMS
+)
+cat dist/SHA256SUMS.binaries
+'''
+
+[tasks."release:notes"]
+description = "Rewrite a published GitHub release's notes with communique; needs ANTHROPIC_API_KEY in fnox.toml"
+usage = 'arg "<tag>" help="Release tag, such as v0.2.0"'
+tools = { fnox = "1.42.0", communique = "1.6.2" }
+run = 'fnox exec -- communique generate "${usage_tag?}" --github-release'

@@ -26,10 +26,20 @@ ACL-gated reads. It holds no durable copy of 1Password item data:
 values are cached in memory only, refreshed on a delta cycle.
 `
 
+// version is the release tag (such as v0.2.0), stamped by the release
+// build with -ldflags "-X .../backend.version=<tag>". OpenBao rejects a
+// registration whose version differs from the one the plugin reports,
+// so an unstamped build reports none.
+var version string
+
 // clientVersion is sent to 1Password as this integration's version
-// (onepassword.WithIntegrationInfo). A placeholder until Task 9 (CI
-// release) stamps a real build version in here.
-const clientVersion = "dev"
+// (onepassword.WithIntegrationInfo).
+func clientVersion() string {
+	if version == "" {
+		return "dev"
+	}
+	return version
+}
 
 // sdkVersion is the pinned github.com/1password/onepassword-sdk-go
 // version (go.mod) — surfaced on op/status (spec §3).
@@ -99,7 +109,7 @@ func newBackend() *Backend {
 		gate:     newGovernor(time.Now),
 	}
 	b.clientFactory = func(ctx context.Context, token string) (OPClient, error) {
-		return NewSDKClient(ctx, token, clientVersion)
+		return NewSDKClient(ctx, token, clientVersion())
 	}
 	b.Backend = &framework.Backend{
 		Help:        strings.TrimSpace(backendHelp),
@@ -111,11 +121,13 @@ func newBackend() *Backend {
 			pathVaultItems(b),
 			pathItem(b),
 			pathField(b),
+			pathKV(b),
 			pathRefresh(b),
 			pathRefreshVault(b),
 			pathInvalidate(b),
 			pathInvalidateVault(b),
 		},
+		RunningVersion: version,
 		InitializeFunc: b.initialize,
 		PeriodicFunc:   b.periodic,
 	}

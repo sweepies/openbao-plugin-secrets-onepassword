@@ -1,37 +1,44 @@
-name: ci
+name: CI
 
 on:
   push:
-    branches: [main, develop]
+    branches: [main]
   pull_request:
-    branches: [main, develop]
+
+permissions:
+  contents: read
+
+# A newer push to a pull request supersedes its older runs.
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
-  test:
-    name: Test
+  ci:
+    name: CI
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     steps:
-      - uses: actions/checkout@v4
-
-      - name: Parse Go version from mise.toml
-        id: go-version
-        run: echo "version=$(grep '^go' mise.toml | sed -E 's/.*"(.*)".*/\1/')" >> "$GITHUB_OUTPUT"
-
-      - uses: actions/setup-go@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          go-version: ${{ steps.go-version.outputs.version }}
+          persist-credentials: false
+      - uses: jdx/mise-action@08ae2a091c038e1e05ec6f5115dc5c69d5a2a6b8 # v5.1.2
+        with:
+          cache: true
+      - run: mise run ci
 
-      - name: gofmt
+  # The one check to require. A failed or cancelled job fails it.
+  result:
+    name: CI result
+    needs: [ci]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled')
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
         run: |
-          UNFORMATTED=$(gofmt -l .)
-          if [ -n "$UNFORMATTED" ]; then
-            echo "$UNFORMATTED"
-            echo "gofmt found unformatted files (see above)"
-            exit 1
-          fi
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: go test
-        run: go test -race ./...
+          echo "A required job did not pass: $RESULTS"
+          exit 1
+      - run: echo "Required jobs passed."

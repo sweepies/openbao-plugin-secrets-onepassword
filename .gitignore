@@ -1,4 +1,4 @@
 /bin/
+/dist/
 *.test
-/bench/dist/
-/bench/scratch/
+.env

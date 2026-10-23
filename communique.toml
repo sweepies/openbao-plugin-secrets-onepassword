@@ -1,0 +1,22 @@
+# Release notes for the 1Password OpenBao plugin. The release workflow runs
+# `communique generate <tag> --github-release` with ANTHROPIC_API_KEY from fnox.
+
+context = """
+openbao-plugin-secrets-onepassword is an OpenBao secrets engine that serves
+1Password items live through 1Password's service-account SDK, from an
+in-memory replica that is never written to OpenBao storage. OpenBao ACLs and
+audit logging gate every read. It ships as an OCI plugin image for OpenBao's
+declarative plugin catalog and as static Linux archives. It is a fork of
+NavistAu/openbao-plugin-secrets-onepassword, under MPL-2.0.
+"""
+
+system_extra = """
+Call out any change to what is cached, for how long, or under what staleness
+guarantees, and any change to the plugin's paths or response shapes. Give the
+new image reference and binary SHA-256 operators pin.
+"""
+
+[defaults]
+model = "claude-haiku-5-5"
+repo = "sweepies/openbao-plugin-secrets-onepassword"
+emoji = false
