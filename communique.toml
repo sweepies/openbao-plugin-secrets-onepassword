@@ -1,5 +1,6 @@
 # Release notes for the 1Password OpenBao plugin. The release workflow runs
-# `communique generate <tag> --github-release` with ANTHROPIC_API_KEY from fnox.
+# `communique generate <tag> --github-release` with ANTHROPIC_API_KEY from
+# Infisical.
 
 context = """
 openbao-plugin-secrets-onepassword is an OpenBao secrets engine that serves

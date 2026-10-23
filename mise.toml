@@ -65,7 +65,7 @@ cat dist/SHA256SUMS.binaries
 '''
 
 [tasks."release:notes"]
-description = "Rewrite a published GitHub release's notes with communique; needs ANTHROPIC_API_KEY in fnox.toml"
+description = "Rewrite a published GitHub release's notes with communique; needs ANTHROPIC_API_KEY (Infisical, environment prod)"
 usage = 'arg "<tag>" help="Release tag, such as v0.2.0"'
-tools = { fnox = "1.42.0", communique = "1.6.2" }
-run = 'fnox exec -- communique generate "${usage_tag?}" --github-release'
+tools = { communique = "1.6.2" }
+run = 'communique generate "${usage_tag?}" --github-release'
