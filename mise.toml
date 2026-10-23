@@ -43,6 +43,7 @@ run = [
 description = "Build reproducible static release binaries and archives into dist/"
 usage = 'arg "<tag>" help="Release tag, such as v0.2.0"'
 run = '''
+#!/usr/bin/env bash
 set -euo pipefail
 tag="${usage_tag?}"
 name=openbao-plugin-secrets-onepassword
